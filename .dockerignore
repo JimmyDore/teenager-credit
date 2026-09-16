@@ -1,0 +1,10 @@
+node_modules
+.git
+.github
+*.log
+.DS_Store
+README.md
+data/
+.env
+docs/
+deploy/test/

@@ -1,0 +1,156 @@
+name: Deploy to Hetzner
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-credit-ado
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Tests (node --test)
+        run: npm test
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: test
+    # Les secrets passent toujours par `env:` puis sont écrits dans des
+    # fichiers sur le runner, envoyés par stdin SSH : jamais de
+    # ${{ secrets.* }} dans une ligne de commande distante.
+    steps:
+      - name: Check required secrets
+        env:
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+        run: |
+          if [ -z "$ADMIN_PASSWORD" ]; then
+            echo "::error title=ADMIN_PASSWORD manquant::Le secret ADMIN_PASSWORD est vide ou absent (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+          # Écrit entre apostrophes dans .env (format env_file de Compose) :
+          # antislash et retour à la ligne ne survivent pas à ce format.
+          case "$ADMIN_PASSWORD" in
+            *\\* | *$'\n'* | *$'\r'*)
+              echo "::error title=ADMIN_PASSWORD invalide::ADMIN_PASSWORD ne doit contenir ni antislash ni retour à la ligne."
+              exit 1
+              ;;
+          esac
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Update code on server
+        run: |
+          ssh -i ~/.ssh/id_ed25519 root@77.42.23.215 'bash -s' <<'EOF'
+          set -euo pipefail
+          REPO=https://github.com/JimmyDore/teenager-credit.git
+          DIR=/root/credit-ado
+          if [ -d "$DIR/.git" ]; then
+            cd "$DIR"
+            git fetch --prune origin
+            git checkout -B main origin/main
+          else
+            git clone "$REPO" "$DIR"
+            cd "$DIR"
+          fi
+          EOF
+
+      - name: Write app .env
+        env:
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+        run: |
+          umask 077
+          f="$RUNNER_TEMP/credit-ado.env"
+          trap 'rm -f "$f"' EXIT
+          q="'"
+          bq="\\'"
+          printf "ADMIN_PASSWORD='%s'\n" "${ADMIN_PASSWORD//"$q"/"$bq"}" > "$f"
+          ssh -i ~/.ssh/id_ed25519 root@77.42.23.215 \
+            'umask 077 && cat > /root/credit-ado/.env && chmod 600 /root/credit-ado/.env' < "$f"
+
+      - name: Deploy on server
+        run: |
+          ssh -i ~/.ssh/id_ed25519 root@77.42.23.215 'bash -s' <<'EOF'
+          set -euo pipefail
+          # Le conteneur tourne en uid 1000 (utilisateur node).
+          install -d -o 1000 -g 1000 -m 700 /root/credit-ado-data
+          cd /root/credit-ado
+          docker compose up -d --build
+          docker image prune -f
+          EOF
+
+      - name: Configure backups
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -n "$R2_ENDPOINT" ] && [ -n "$R2_ACCESS_KEY_ID" ] && [ -n "$R2_SECRET_ACCESS_KEY" ]; then
+            if [ -z "$SLACK_WEBHOOK_URL" ]; then
+              echo "::warning::SLACK_WEBHOOK_URL absent : les échecs de sauvegarde ne seront pas notifiés."
+            fi
+            umask 077
+            f="$RUNNER_TEMP/credit-ado-backup.env"
+            trap 'rm -f "$f"' EXIT
+            {
+              echo 'RCLONE_CONFIG_R2_TYPE=s3'
+              echo 'RCLONE_CONFIG_R2_PROVIDER=Cloudflare'
+              echo 'RCLONE_CONFIG_R2_REGION=auto'
+              printf 'RCLONE_CONFIG_R2_ENDPOINT=%s\n' "$R2_ENDPOINT"
+              printf 'RCLONE_CONFIG_R2_ACCESS_KEY_ID=%s\n' "$R2_ACCESS_KEY_ID"
+              printf 'RCLONE_CONFIG_R2_SECRET_ACCESS_KEY=%s\n' "$R2_SECRET_ACCESS_KEY"
+              echo 'RCLONE_CONFIG_R2_NO_CHECK_BUCKET=true'
+              printf 'SLACK_WEBHOOK_URL=%s\n' "$SLACK_WEBHOOK_URL"
+            } > "$f"
+            ssh -i ~/.ssh/id_ed25519 root@77.42.23.215 \
+              'umask 077 && cat > /root/.credit-ado-backup.env && chmod 600 /root/.credit-ado-backup.env' < "$f"
+            ssh -i ~/.ssh/id_ed25519 root@77.42.23.215 \
+              'test -x /root/credit-ado/deploy/backup.sh && install -o root -g root -m 644 /root/credit-ado/deploy/cron/credit-ado-backup /etc/cron.d/credit-ado-backup'
+            echo "Backups enabled: /etc/cron.d/credit-ado-backup (02:00 -> r2:hetzner-backups/credit-ado)"
+          else
+            ssh -i ~/.ssh/id_ed25519 root@77.42.23.215 \
+              'rm -f /etc/cron.d/credit-ado-backup /root/.credit-ado-backup.env'
+            echo "R2 secrets absent, backups disabled"
+          fi
+
+  health:
+    runs-on: ubuntu-latest
+    needs: deploy
+    steps:
+      - name: Health check
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -fsS -o /dev/null -w '%{http_code}' https://credit-ado.jimmydore.fr/health || true)
+            if [ "$code" = "200" ]; then
+              echo "Health check passed on attempt $i"
+              curl -fsS https://credit-ado.jimmydore.fr/health
+              exit 0
+            fi
+            echo "Attempt $i: health='$code', retrying in 5s..."
+            sleep 5
+          done
+          echo "Health check failed after 30 attempts"
+          exit 1

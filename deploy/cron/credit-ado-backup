@@ -1,0 +1,4 @@
+# Sauvegarde nocturne de credit-ado vers Cloudflare R2 (installé par la CI).
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+0 2 * * * root /root/credit-ado/deploy/backup.sh >> /var/log/credit-ado-backup.log 2>&1

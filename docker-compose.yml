@@ -1,0 +1,35 @@
+# Stack credit-ado.jimmydore.fr — un seul service node (statique + API).
+# Pas de ports publiés : le trafic arrive via le Caddy partagé (stack
+# ravetycoon) qui fait le TLS et reverse-proxy vers credit-ado-web:8787 sur le
+# réseau Docker `ravetycoon_default`.
+#
+# ATTENTION : le service est préfixé `credit-ado-` à dessein. Le réseau est
+# partagé avec la stack ravetycoon, qui expose déjà les alias DNS `web` et
+# `api` ; un service nommé `web` ou `api` ici capterait le trafic de l'autre
+# stack (piège déjà rencontré, cf. compose de music-bingo).
+#
+# `.env` (non versionné) est écrit par la CI et contient ADMIN_PASSWORD.
+# Les données (credits.json) vivent sur l'hôte dans /root/credit-ado-data,
+# qui doit appartenir à l'uid 1000 (utilisateur `node` du conteneur).
+services:
+  credit-ado-web:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: credit-ado-web
+    container_name: credit-ado-web
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATA_DIR: /data
+      PORT: "8787"
+      APP_TITLE: "Crédit ados 2026-2027"
+    volumes:
+      - /root/credit-ado-data:/data
+    networks:
+      - ravetycoon_default
+
+networks:
+  ravetycoon_default:
+    external: true
