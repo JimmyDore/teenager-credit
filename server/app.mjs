@@ -43,15 +43,16 @@ export async function buildApp({
   const app = Fastify({ logger, trustProxy: true });
   await app.register(fastifyCookie);
 
-  // Assets may be cached, HTML pages never (a cached index.html would keep
-  // serving an old front after a deploy).
+  // Nothing is cached without revalidation: asset URLs are unversioned, so a
+  // cached JS/CSS file would outlive a deploy and run against the new HTML/API.
+  // ETags keep revalidation a cheap 304.
   await app.register(fastifyStatic, {
     root: publicDir,
     prefix: '/',
     index: false,
-    maxAge: '1d',
-    setHeaders(reply, filePath) {
-      if (filePath.endsWith('.html')) reply.header('cache-control', 'no-cache');
+    cacheControl: false,
+    setHeaders(reply) {
+      reply.header('cache-control', 'no-cache');
     },
   });
 

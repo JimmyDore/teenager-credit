@@ -61,7 +61,7 @@ describe('public endpoints', () => {
     assert.deepEqual(res.json(), { title: 'Crédit ados 2027-2028' });
   });
 
-  test('HTML pages are never cached, other assets are cached for a day', async (t) => {
+  test('nothing static is cached without revalidation (unversioned JS must not outlive a deploy)', async (t) => {
     const { app } = await makeApp(t);
 
     const home = await app.inject('/');
@@ -76,7 +76,8 @@ describe('public endpoints', () => {
 
     const script = await app.inject('/app.js');
     assert.equal(script.statusCode, 200);
-    assert.equal(script.headers['cache-control'], 'public, max-age=86400');
+    assert.equal(script.headers['cache-control'], 'no-cache');
+    assert.ok(script.headers.etag, 'assets keep an ETag so revalidation is a cheap 304');
   });
 
   test('the split rule is served to the browser so the admin preview uses the very same code', async (t) => {

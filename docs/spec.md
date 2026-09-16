@@ -97,7 +97,7 @@ History sorted by date desc, then createdAt desc.
 ### Other
 - `GET /api/config` → `{title}` (public).
 - `GET /health` → `{ok:true}`.
-- Static files from `public/`; HTML with `cache-control: no-cache`, other assets `maxAge 1d` (same as chifoumi — avoids stale front after deploy).
+- Static files from `public/`, all with `cache-control: no-cache` + ETag (asset URLs are unversioned, so a day-cached JS would outlive a deploy).
 
 ## UI (vanilla HTML/CSS/JS, mobile-first, French)
 
