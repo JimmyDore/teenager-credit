@@ -1,4 +1,6 @@
 # Sauvegarde nocturne de credit-ado vers Cloudflare R2 (installé par la CI).
+# hub-run (installé par le déploiement du hub) signale chaque run à la tâche
+# credit-ado-backup de hub.jimmydore.fr, qui alerte sur Slack en cas d'échec.
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-0 2 * * * root /root/credit-ado/deploy/backup.sh >> /var/log/credit-ado-backup.log 2>&1
+0 2 * * * root /usr/local/bin/hub-run credit-ado-backup -- /root/credit-ado/deploy/backup.sh >> /var/log/credit-ado-backup.log 2>&1
